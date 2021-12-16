@@ -10,7 +10,7 @@ import org.apache.kafka.connect.source.SourceRecord;
 import io.debezium.engine.ChangeEvent;
 import io.debezium.engine.RecordChangeEvent;
 
-class EmbeddedEngineChangeEvent<K, V> implements ChangeEvent<K, V>, RecordChangeEvent<V> {
+public class EmbeddedEngineChangeEvent<K, V> implements ChangeEvent<K, V>, RecordChangeEvent<V> {
 
     private final K key;
     private final V value;
