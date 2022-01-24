@@ -5,8 +5,11 @@
  */
 package io.debezium.server.kafka;
 
+import java.math.BigInteger;
+import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.util.List;
+import java.util.Optional;
 import java.util.concurrent.CountDownLatch;
 
 import javax.annotation.PostConstruct;
@@ -24,6 +27,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import io.debezium.DebeziumException;
+import io.debezium.embedded.EmbeddedEngineChangeEvent;
 import io.debezium.engine.ChangeEvent;
 import io.debezium.engine.DebeziumEngine;
 import io.debezium.engine.DebeziumEngine.RecordCommitter;
@@ -58,7 +62,7 @@ public class KafkaChangeConsumer extends BaseChangeConsumer implements DebeziumE
 
         final Config config = ConfigProvider.getConfig();
         producer = new KafkaProducer<>(getConfigSubset(config, PROP_PREFIX_PRODUCER));
-        LOGGER.info("consumer started...");
+        LOGGER.info("consumer started... (running a custom build)");
     }
 
     @PreDestroy
@@ -69,7 +73,7 @@ public class KafkaChangeConsumer extends BaseChangeConsumer implements DebeziumE
                 producer.close(Duration.ofSeconds(5));
             }
             catch (Throwable t) {
-                LOGGER.warn("Could not close producer {}", t);
+                LOGGER.warn("Could not close producer", t);
             }
         }
     }
@@ -80,7 +84,12 @@ public class KafkaChangeConsumer extends BaseChangeConsumer implements DebeziumE
         for (ChangeEvent<Object, Object> record : records) {
             try {
                 LOGGER.trace("Received event '{}'", record);
-                producer.send(new ProducerRecord<>(record.destination(), record.key(), record.value()), (metadata, exception) -> {
+
+                ProducerRecord<Object, Object> producerRecord = new ProducerRecord<>(record.destination(), record.key(), record.value());
+
+                enrichWithHeaders(record, producerRecord);
+
+                producer.send(producerRecord, (metadata, exception) -> {
                     if (exception != null) {
                         LOGGER.error("Failed to send record to {}:", record.destination(), exception);
                         throw new DebeziumException(exception);
@@ -99,5 +108,36 @@ public class KafkaChangeConsumer extends BaseChangeConsumer implements DebeziumE
 
         latch.await();
         committer.markBatchFinished();
+    }
+
+    private void enrichWithHeaders(ChangeEvent<Object, Object> source, ProducerRecord<Object, Object> producerRecord) {
+        if (source instanceof EmbeddedEngineChangeEvent) {
+            ((EmbeddedEngineChangeEvent<Object, Object>) source)
+                    .sourceRecord()
+                    .headers()
+                    .forEach(h -> {
+                        Optional<byte[]> value = Optional.empty();
+
+                        switch (h.schema().type()) {
+                            case BYTES:
+                                value = Optional.of((byte[]) h.value());
+                                break;
+                            case INT32:
+                                value = Optional.of(BigInteger.valueOf((Integer) h.value()).toByteArray());
+                                break;
+                            case INT64:
+                                value = Optional.of(BigInteger.valueOf((Long) h.value()).toByteArray());
+                                break;
+                            case STRING:
+                                value = Optional.of(((String) h.value()).getBytes(StandardCharsets.UTF_8));
+                                break;
+                            default:
+                                LOGGER.warn("Unexpected header value type {}. Skipping.", h.schema().type());
+                        }
+
+                        value.ifPresent(v -> producerRecord.headers().add(h.key(), v));
+                    });
+        }
+
     }
 }
